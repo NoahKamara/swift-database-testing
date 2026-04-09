@@ -4,41 +4,43 @@
 import PackageDescription
 
 let package = Package(
-    name: "TestDatabase",
+    name: "DatabaseTesting",
     platforms: [
         .macOS(.v26),
     ],
     products: [
         .library(
-            name: "TestDatabase",
-            targets: ["TestDatabase"]
+            name: "DatabaseTesting",
+            targets: ["DatabaseTesting"]
         ),
         .library(
-            name: "TestDatabaseTesting",
-            targets: ["TestDatabaseTesting"]
+            name: "DatabaseTestingCore",
+            targets: ["DatabaseTestingCore"]
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/vapor/postgres-nio.git", from: "1.32.2"),
         .package(url: "https://github.com/swiftpackageindex/ShellOut", from: "3.3.0"),
     ],
     targets: [
         .target(
-            name: "TestDatabase",
+            name: "DatabaseTestingCore",
             dependencies: [
-                .product(name: "PostgresNIO", package: "postgres-nio"),
                 .product(name: "ShellOut", package: "ShellOut"),
             ]
         ),
         .target(
-            name: "TestDatabaseTesting",
+            name: "DatabaseTesting",
             dependencies: [
-                "TestDatabase",
+                "DatabaseTestingCore",
             ]
         ),
         .testTarget(
-            name: "TestDatabaseTests",
-            dependencies: ["TestDatabase", "TestDatabaseTesting"]
+            name: "DatabaseTestingTests",
+            dependencies: [
+                "DatabaseTestingCore",
+                "DatabaseTesting",
+                .product(name: "ShellOut", package: "ShellOut"),
+            ]
         ),
     ],
     swiftLanguageModes: [.v6]

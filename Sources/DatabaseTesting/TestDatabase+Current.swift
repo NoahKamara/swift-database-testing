@@ -1,12 +1,18 @@
-import TestDatabase
+//
+//  TestDatabase+Current.swift
+//
+//  Copyright © 2024 Noah Kamara.
+//
 
-extension TestDatabase {
+import DatabaseTestingCore
+
+public extension TestDatabase {
     /// Returns the test database for the current scope, lazily acquiring one
     /// from the pool and running all stacked preparations on first access.
-    public static func current() async throws -> TestDatabase {
-        guard let box = TestDatabaseStorage.box else {
+    static func current() async throws -> TestDatabase {
+        guard let box = DatabaseContext.box else {
             preconditionFailure(
-                "TestDatabase.current() called outside of a .databasePool() trait scope"
+                "TestDatabase.current() called outside of a .database() trait scope"
             )
         }
 

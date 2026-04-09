@@ -1,32 +1,14 @@
 //
-//  File.swift
-//  TestDatabase
+//  ShellOut+DB.swift
 //
-//  Created by Noah Kamara on 09.04.2026.
+//  Copyright © 2024 Noah Kamara.
 //
 
-import Foundation
-
-/// A `DatabaseFactory` manages a database container lifecycle
-protocol ContainerBacking {
-    associatedtype Reference
-
-    /// Create a new database instance
-    /// - Parameters:
-    ///   - image: the image used to create the container
-    func create(
-        image: String
-    ) async throws -> String
-
-    func destroy(_ containerName: String) async throws
-
-    func list() async throws -> [String]
-}
+import ShellOut
 
 extension ShellOutCommand {
     static func launchDB(
         containerName: String,
-        port: Int,
         username: String,
         password: String,
         database: String,
@@ -34,6 +16,7 @@ extension ShellOutCommand {
     ) -> ShellOutCommand {
         .init(command: .docker, arguments: [
             "run", "--name", containerName,
+            "--label", "testdb.managed=true",
             "-e", "POSTGRES_DB=\(database)",
             "-e", "POSTGRES_USER=\(username)",
             "-e", "POSTGRES_PASSWORD=\(password)",
@@ -41,7 +24,7 @@ extension ShellOutCommand {
             "-e", "POSTGRES_INITDB_ARGS=--auth-host=md5",
             "-e", "PGDATA=/pgdata",
             "--tmpfs", "/pgdata:rw,noexec,nosuid,size=1024m",
-            "-p", "\(port):5432",
+            "-p", "0:5432",
             "-d",
             image,
         ])
@@ -53,10 +36,31 @@ extension ShellOutCommand {
         ])
     }
 
-    static var getContainerNames: ShellOutCommand {
+    static func getContainerPort(containerName: String) -> ShellOutCommand {
         .init(command: .docker, arguments: [
-            "ps", "--format", "{{.Names}}",
+            "port", containerName, "5432/tcp",
+        ])
+    }
+
+    static func inspectContainerEnv(containerName: String) -> ShellOutCommand {
+        .init(command: .docker, arguments: [
+            "inspect", "--format", "{{json .Config.Env}}", containerName,
+        ])
+    }
+
+    static var getManagedContainerNames: ShellOutCommand {
+        .init(command: .docker, arguments: [
+            "ps", "--filter", "label=testdb.managed=true", "--format", "{{.Names}}",
         ])
     }
 }
 
+private extension String {
+    static var docker: Self {
+#if os(macOS)
+        "/usr/local/bin/docker"
+#else
+        "docker"
+#endif
+    }
+}
