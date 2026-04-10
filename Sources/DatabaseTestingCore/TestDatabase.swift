@@ -37,6 +37,11 @@ public struct TestDatabase: Hashable, Sendable {
         }
 
         let port = try await discoverPort(containerName: containerName)
+        try await waitUntilReady(
+            containerName: containerName,
+            username: username,
+            database: databaseName
+        )
 
         return TestDatabase(
             host: "localhost",
@@ -53,13 +58,22 @@ public struct TestDatabase: Hashable, Sendable {
     static func fromExistingContainer(name: String) async throws -> TestDatabase {
         let port = try await discoverPort(containerName: name)
         let env = try await discoverEnv(containerName: name)
+        let databaseName = env["POSTGRES_DB"] ?? "test"
+        let username = env["POSTGRES_USER"] ?? "test"
+        let password = env["POSTGRES_PASSWORD"] ?? "test"
+
+        try await waitUntilReady(
+            containerName: name,
+            username: username,
+            database: databaseName
+        )
 
         return TestDatabase(
             host: "localhost",
             port: port,
-            databaseName: env["POSTGRES_DB"] ?? "test",
-            username: env["POSTGRES_USER"] ?? "test",
-            password: env["POSTGRES_PASSWORD"] ?? "test",
+            databaseName: databaseName,
+            username: username,
+            password: password,
             containerName: name
         )
     }
@@ -136,6 +150,25 @@ private func discoverEnv(containerName: String) async throws -> [String: String]
         to: .inspectContainerEnv(containerName: containerName)
     ).stdout
     return Parsing.env(from: output)
+}
+
+private func waitUntilReady(
+    containerName: String,
+    username: String,
+    database: String
+) async throws {
+    try await withRetry(
+        maxAttempts: 50,
+        backoff: .milliseconds(200)
+    ) { _ in
+        try await ShellOut.shellOut(
+            to: .waitUntilDBReady(
+                containerName: containerName,
+                username: username,
+                database: database
+            )
+        )
+    }
 }
 
 package enum TestDatabaseError: Error, LocalizedError {

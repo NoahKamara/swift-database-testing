@@ -107,12 +107,6 @@ package actor PoolRegistry {
     private func configure(_ configuration: DatabasePool.Configuration) async throws {
         guard self.state == .unconfigured else { return }
         self.configuration = configuration
-
-        let existing = try await findExistingDatabases(maxCount: configuration.capacity)
-        for db in existing {
-            self.availableDatabases.insert(db)
-        }
-
         self.state = .active
     }
 

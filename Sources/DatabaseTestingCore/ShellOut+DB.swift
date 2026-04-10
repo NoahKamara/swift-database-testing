@@ -48,6 +48,19 @@ extension ShellOutCommand {
         ])
     }
 
+    static func waitUntilDBReady(
+        containerName: String,
+        username: String,
+        database: String
+    ) -> ShellOutCommand {
+        .init(command: .docker, arguments: [
+            "exec", containerName,
+            "pg_isready",
+            "-U", username,
+            "-d", database,
+        ])
+    }
+
     static var getManagedContainerNames: ShellOutCommand {
         .init(command: .docker, arguments: [
             "ps", "--filter", "label=testdb.managed=true", "--format", "{{.Names}}",

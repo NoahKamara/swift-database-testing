@@ -8,8 +8,6 @@ import DatabaseTestingCore
 import Testing
 
 public struct DatabaseTrait: TestTrait, SuiteTrait, TestScoping {
-    @TaskLocal private static var isPoolScoped: Bool = false
-
     let configuration: DatabaseConfiguration?
 
     public var isRecursive: Bool {
@@ -22,47 +20,59 @@ public struct DatabaseTrait: TestTrait, SuiteTrait, TestScoping {
         performing function: @Sendable () async throws -> Void
     ) async throws {
         if test.isSuite, testCase == nil {
-            if !Self.isPoolScoped {
-                try await Self.$isPoolScoped.withValue(true) {
-                    do {
-                        try await self.runWithConfig(function)
-                        try await DatabasePool.destroy()
-                    } catch {
-                        try? await DatabasePool.destroy()
-                        throw error
-                    }
+            await DatabaseContext.poolLifecycle.enterSuiteScope()
+            do {
+                try await function()
+                if await DatabaseContext.poolLifecycle.exitSuiteScope() {
+                    try await DatabasePool.destroy()
                 }
-            } else {
-                try await self.runWithConfig(function)
+            } catch {
+                if await DatabaseContext.poolLifecycle.exitSuiteScope() {
+                    try? await DatabasePool.destroy()
+                }
+                throw error
             }
         } else {
-            let box = DatabaseContext.Box()
-            try await DatabaseContext.$box.withValue(box) {
-                try await self.runWithConfig(function)
+            _ = await DatabaseContext.registry.push(
+                testID: test.id,
+                configuration: self.configuration
+            )
+            do {
+                try await function()
+            } catch {
+                if let box = await DatabaseContext.registry.pop(
+                    testID: test.id,
+                    hadConfiguration: self.configuration != nil
+                ), let database = box.storage.withLock({ $0 }) {
+                    await DatabasePool.release(database)
+                }
+                throw error
             }
-            if let database = box.storage.withLock({ $0 }) {
+            if let box = await DatabaseContext.registry.pop(
+                testID: test.id,
+                hadConfiguration: self.configuration != nil
+            ), let database = box.storage.withLock({ $0 }) {
                 await DatabasePool.release(database)
             }
-        }
-    }
-
-    private func runWithConfig(
-        _ function: @Sendable () async throws -> Void
-    ) async throws {
-        if let configuration {
-            try await DatabaseContext.$configurationStack.withValue(
-                DatabaseContext.configurationStack + [configuration]
-            ) { try await function() }
-        } else {
-            try await function()
         }
     }
 }
 
 public extension Trait where Self == DatabaseTrait {
+    /// Registers a preparation function for the test database
     static func database(
         prepare: (@Sendable (TestDatabase) async throws -> Void)? = nil
     ) -> Self {
         .init(configuration: prepare.map { DatabaseConfiguration(prepare: $0) })
+    }
+
+    /// Registers a preparation function for the test database
+    /// > This overload is to prevent confusing compile errors when preparation methods return a type
+    static func database(
+        prepare: @escaping @Sendable (TestDatabase) async throws -> some Any
+    ) -> Self {
+        .init(
+            configuration: DatabaseConfiguration(prepare: { db in try await prepare(db) })
+        )
     }
 }
