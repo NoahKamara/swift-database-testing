@@ -202,6 +202,7 @@ struct ParsingTests {
             #expect(TestDatabase.containerName(for: 4) == "testdb_4")
             #expect(TestDatabase.username(for: 4) == "user_4")
             #expect(TestDatabase.databaseName(for: 4) == "test_4")
+            #expect(TestDatabase.baselineName(for: 4) == "test_4_baseline")
         }
 
         @Test("extracts index from indexed container names")

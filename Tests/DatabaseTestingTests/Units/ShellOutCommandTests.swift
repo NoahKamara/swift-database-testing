@@ -164,4 +164,29 @@ struct ShellOutCommandTests {
             #expect(cmd.arguments[idx + 1] == "{{.Names}}")
         }
     }
+
+    @Suite("runPSQL")
+    struct RunPSQLTests {
+        @Test("constructs docker exec with psql")
+        func buildsCommand() {
+            let cmd = ShellOutCommand.runPSQL(
+                containerName: "testdb_1",
+                username: "user_1",
+                password: "secret",
+                database: "postgres",
+                sql: "SELECT 1"
+            )
+
+            #expect(cmd.arguments == [
+                "exec",
+                "-e", "PGPASSWORD=secret",
+                "testdb_1",
+                "psql",
+                "-v", "ON_ERROR_STOP=1",
+                "-U", "user_1",
+                "-d", "postgres",
+                "-c", "SELECT 1",
+            ])
+        }
+    }
 }

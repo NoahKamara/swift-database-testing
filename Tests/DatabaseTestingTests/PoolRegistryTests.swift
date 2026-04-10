@@ -9,16 +9,50 @@ import Testing
 
 private func makeDB(
     port: Int = 5432,
-    name: String = "testdb_a"
+    name: String = "testdb_0"
 ) -> TestDatabase {
-    TestDatabase(
+    let index = TestDatabase.index(fromContainerName: name) ?? 0
+    return TestDatabase(
         host: "localhost",
         port: port,
-        databaseName: "test_\(name)",
-        username: "user_\(name)",
-        password: "pass_\(name)",
+        databaseName: TestDatabase.databaseName(for: index),
+        username: TestDatabase.username(for: index),
+        password: "pass_\(index)",
         containerName: name
     )
+}
+
+private func makeRegistry(
+    existingDatabasesLoader: @escaping @Sendable (Int) async throws -> [TestDatabase] = { _ in [] },
+    databaseLauncher: @escaping @Sendable (DatabasePool.Configuration, Int) async throws -> TestDatabase = { _, index in
+        makeDB(port: 5432 + index, name: TestDatabase.containerName(for: index))
+    },
+    baselineInitializer: @escaping @Sendable (TestDatabase) async throws -> Void = { _ in },
+    baselineRestorer: @escaping @Sendable (TestDatabase) async throws -> Void = { _ in },
+    databaseDestroyer: @escaping @Sendable (TestDatabase) async throws -> Void = { _ in }
+) -> PoolRegistry {
+    PoolRegistry(
+        existingDatabasesLoader: existingDatabasesLoader,
+        databaseLauncher: databaseLauncher,
+        baselineInitializer: baselineInitializer,
+        baselineRestorer: baselineRestorer,
+        databaseDestroyer: databaseDestroyer
+    )
+}
+
+private actor HookRecorder {
+    enum Event: Sendable, Equatable {
+        case initialize(TestDatabase)
+        case restore(TestDatabase)
+        case destroy(TestDatabase)
+        case launch(Int)
+    }
+
+    private(set) var events: [Event] = []
+
+    func record(_ event: Event) {
+        self.events.append(event)
+    }
 }
 
 @Suite("PoolRegistry")
@@ -65,7 +99,7 @@ struct PoolRegistryTests {
         @Test("activate reclaims existing databases")
         func activateReclaimsExisting() async throws {
             let db = makeDB(port: 2, name: "testdb_2")
-            let registry = PoolRegistry(existingDatabasesLoader: { maxCount in
+            let registry = makeRegistry(existingDatabasesLoader: { maxCount in
                 #expect(maxCount == 3)
                 return [db]
             })
@@ -74,6 +108,23 @@ struct PoolRegistryTests {
 
             #expect(await registry.state == .active)
             #expect(await registry.configuration == .init(capacity: 3))
+            #expect(await registry.availableDatabases == [db])
+        }
+
+        @Test("activate initializes reclaimed databases before making them available")
+        func activateInitializesReclaimedDatabases() async throws {
+            let db = makeDB(port: 2, name: "testdb_2")
+            let recorder = HookRecorder()
+            let registry = PoolRegistry(
+                existingDatabasesLoader: { _ in [db] },
+                baselineInitializer: { database in
+                    await recorder.record(.initialize(database))
+                }
+            )
+
+            try await registry.activate(.init(capacity: 3))
+
+            #expect(await recorder.events == [.initialize(db)])
             #expect(await registry.availableDatabases == [db])
         }
     }
@@ -88,6 +139,27 @@ struct PoolRegistryTests {
 
             let retained = try await registry.retain()
             #expect(retained == db)
+        }
+
+        @Test("restores baseline before returning an available database")
+        func restoresBeforeReturningAvailableDatabase() async throws {
+            let db = makeDB()
+            let recorder = HookRecorder()
+            let registry = PoolRegistry(
+                baselineRestorer: { database in
+                    await recorder.record(.restore(database))
+                }
+            )
+            await registry.configureForTesting(
+                .init(capacity: 4),
+                databases: [db],
+                skipLifecycleHooks: false
+            )
+
+            let retained = try await registry.retain()
+
+            #expect(retained == db)
+            #expect(await recorder.events == [.restore(db)])
         }
 
         @Test("moves database from available to in-use")
@@ -136,6 +208,65 @@ struct PoolRegistryTests {
             #expect(first != second)
         }
 
+        @Test("initializes and restores newly launched databases")
+        func initializesAndRestoresNewLaunches() async throws {
+            let recorder = HookRecorder()
+            let launched = makeDB(port: 3, name: "testdb_3")
+            let registry = PoolRegistry(
+                databaseLauncher: { configuration, index in
+                    #expect(configuration == .init(capacity: 4))
+                    await recorder.record(.launch(index))
+                    return launched
+                },
+                baselineInitializer: { database in
+                    await recorder.record(.initialize(database))
+                },
+                baselineRestorer: { database in
+                    await recorder.record(.restore(database))
+                }
+            )
+            await registry.configureForTesting(.init(capacity: 4), skipLifecycleHooks: false)
+
+            let retained = try await registry.retain()
+
+            #expect(retained == launched)
+            #expect(await recorder.events == [
+                .launch(0),
+                .initialize(launched),
+                .restore(launched),
+            ])
+        }
+
+        @Test("restore failures destroy database and surface the error")
+        func restoreFailureDestroysDatabase() async {
+            struct RestoreFailure: Error {}
+
+            let db = makeDB(port: 4, name: "testdb_4")
+            let recorder = HookRecorder()
+            let registry = PoolRegistry(
+                baselineRestorer: { database in
+                    await recorder.record(.restore(database))
+                    throw RestoreFailure()
+                },
+                databaseDestroyer: { database in
+                    await recorder.record(.destroy(database))
+                }
+            )
+            await registry.configureForTesting(
+                .init(capacity: 4),
+                databases: [db],
+                skipLifecycleHooks: false
+            )
+
+            await #expect(throws: RestoreFailure.self) {
+                _ = try await registry.retain()
+            }
+
+            #expect(await recorder.events == [.restore(db), .destroy(db)])
+            #expect(await registry.availableDatabases.isEmpty)
+            #expect(await registry.inUseDatabases.isEmpty)
+        }
+
         @Test("totalCount reflects available + inUse")
         func totalCount() async throws {
             let registry = PoolRegistry()
@@ -162,6 +293,27 @@ struct PoolRegistryTests {
 
             #expect(await registry.availableDatabases.contains(db))
             #expect(await registry.inUseDatabases.isEmpty)
+        }
+
+        @Test("release does not restore baseline")
+        func releaseDoesNotRestoreBaseline() async throws {
+            let recorder = HookRecorder()
+            let db = makeDB()
+            let registry = PoolRegistry(
+                baselineRestorer: { database in
+                    await recorder.record(.restore(database))
+                }
+            )
+            await registry.configureForTesting(
+                .init(capacity: 4),
+                databases: [db],
+                skipLifecycleHooks: false
+            )
+
+            let retained = try try await #require(registry.retain())
+            await registry.release(retained)
+
+            #expect(await recorder.events == [.restore(db)])
         }
 
         @Test("released database can be retained again")

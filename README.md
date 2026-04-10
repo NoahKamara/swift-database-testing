@@ -31,7 +31,7 @@ Then add the module you need to your test target:
 
 ## Usage
 
-Apply the `.database()` trait to a suite or test. The trait manages the pool lifecycle automatically -- containers are created as needed and destroyed when the outermost suite finishes.
+Apply the `.database()` trait to a suite or test. The trait manages the pool lifecycle automatically -- containers are created as needed, reset to a clean baseline every time they are retained, and destroyed when the outermost suite finishes.
 
 ```swift
 import Testing
@@ -50,7 +50,7 @@ struct MyDatabaseTests {
 
 ### Preparing the database
 
-Pass a `prepare` closure to run setup (migrations, seed data, etc.) against each database before tests use it:
+Pass a `prepare` closure to run setup (migrations, seed data, etc.) against each database after the pool restores its clean baseline for the current test scope:
 
 ```swift
 @Suite(.database(prepare: { db in
@@ -84,11 +84,12 @@ The pool reads its configuration from environment variables at first use:
 
 ## How it works
 
-1. The first time a test needs a database, `PoolRegistry` initializes. It looks for existing containers labeled `testdb.managed=true` and reclaims them (so a crashed previous run doesn't leak containers).
-2. When a test retains a database and none are available, a new container is launched up to the configured capacity. If the pool is full, the test waits (with a 10-second timeout).
-3. Containers use tmpfs-backed `PGDATA` for faster writes and ephemeral storage.
-4. Each container gets a stable indexed name (`testdb_<index>`), user, and database name. The host port is dynamically assigned (`-p 0:5432`).
-5. When the outermost `DatabaseTrait`-scoped suite finishes, all containers are destroyed in parallel.
+1. The first time a test needs a database, `PoolRegistry` initializes. It looks for existing containers labeled `testdb.managed=true`, rebuilds their clean baselines, and reclaims them so a crashed previous run doesn't leak containers.
+2. When a test retains a database and none are available, a new container is launched up to the configured capacity, initialized with a canonical clean baseline, and restored before it is handed out. If the pool is full, the test waits (with a 10-second timeout).
+3. User-provided `.database(prepare:)` closures are stacked by suite/test scope and applied in order after the pool restores that clean baseline.
+4. Containers use tmpfs-backed `PGDATA` for faster writes and ephemeral storage.
+5. Each container gets a stable indexed name (`testdb_<index>`), user, database name, and companion baseline database. The host port is dynamically assigned (`-p 0:5432`).
+6. When the outermost `DatabaseTrait`-scoped suite finishes, all containers are destroyed in parallel.
 
 ## License
 

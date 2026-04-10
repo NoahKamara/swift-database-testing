@@ -61,6 +61,25 @@ extension ShellOutCommand {
         ])
     }
 
+    static func runPSQL(
+        containerName: String,
+        username: String,
+        password: String,
+        database: String,
+        sql: String
+    ) -> ShellOutCommand {
+        .init(command: .docker, arguments: [
+            "exec",
+            "-e", "PGPASSWORD=\(password)",
+            containerName,
+            "psql",
+            "-v", "ON_ERROR_STOP=1",
+            "-U", username,
+            "-d", database,
+            "-c", sql,
+        ])
+    }
+
     static var getManagedContainerNames: ShellOutCommand {
         .init(command: .docker, arguments: [
             "ps", "--filter", "label=testdb.managed=true", "--format", "{{.Names}}",

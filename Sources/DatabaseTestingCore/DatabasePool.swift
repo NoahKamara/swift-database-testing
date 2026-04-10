@@ -76,7 +76,12 @@ package actor PoolRegistry {
     package private(set) var availableDatabases: Set<TestDatabase> = []
     package private(set) var inUseDatabases: Set<TestDatabase> = []
     package private(set) var launchingCount: Int = 0
+    private var skipLifecycleHooksInTesting = false
     private let existingDatabasesLoader: @Sendable (Int) async throws -> [TestDatabase]
+    private let databaseLauncher: @Sendable (DatabasePool.Configuration, Int) async throws -> TestDatabase
+    private let baselineInitializer: @Sendable (TestDatabase) async throws -> Void
+    private let baselineRestorer: @Sendable (TestDatabase) async throws -> Void
+    private let databaseDestroyer: @Sendable (TestDatabase) async throws -> Void
 
     package var totalCount: Int {
         self.availableDatabases.count + self.inUseDatabases.count + self.launchingCount
@@ -84,21 +89,43 @@ package actor PoolRegistry {
 
     package init(
         existingDatabasesLoader: @escaping @Sendable (Int) async throws -> [TestDatabase] = PoolRegistry
-            .findExistingDatabases
+            .findExistingDatabases,
+        databaseLauncher: @escaping @Sendable (DatabasePool.Configuration, Int) async throws
+            -> TestDatabase = { configuration, index in
+                try await TestDatabase.launch(
+                    configuration: configuration,
+                    index: index
+                )
+            },
+        baselineInitializer: @escaping @Sendable (TestDatabase) async throws -> Void = { database in
+            try await database.initializeBaseline()
+        },
+        baselineRestorer: @escaping @Sendable (TestDatabase) async throws -> Void = { database in
+            try await database.restoreBaseline()
+        },
+        databaseDestroyer: @escaping @Sendable (TestDatabase) async throws -> Void = { database in
+            try await database.destroy()
+        }
     ) {
         self.existingDatabasesLoader = existingDatabasesLoader
+        self.databaseLauncher = databaseLauncher
+        self.baselineInitializer = baselineInitializer
+        self.baselineRestorer = baselineRestorer
+        self.databaseDestroyer = databaseDestroyer
     }
 
     /// Pre-configure the registry with databases for testing (bypasses Docker).
     package func configureForTesting(
         _ configuration: DatabasePool.Configuration,
-        databases: Set<TestDatabase> = []
+        databases: Set<TestDatabase> = [],
+        skipLifecycleHooks: Bool = true
     ) {
         self.state = .active
         self.configuration = configuration
         self.availableDatabases = databases
         self.inUseDatabases = []
         self.launchingCount = 0
+        self.skipLifecycleHooksInTesting = skipLifecycleHooks
     }
 
     /// Reset the registry to its initial state (for test cleanup).
@@ -108,6 +135,7 @@ package actor PoolRegistry {
         self.availableDatabases = []
         self.inUseDatabases = []
         self.launchingCount = 0
+        self.skipLifecycleHooksInTesting = false
     }
 
     package func activate(_ configuration: DatabasePool.Configuration) async throws {
@@ -117,9 +145,16 @@ package actor PoolRegistry {
     private func configure(_ configuration: DatabasePool.Configuration) async throws {
         guard self.state == .unconfigured else { return }
         self.configuration = configuration
-        self.availableDatabases = try await Set(
-            self.existingDatabasesLoader(configuration.capacity)
-        )
+        self.skipLifecycleHooksInTesting = false
+        let existingDatabases = try await self.existingDatabasesLoader(configuration.capacity)
+        var initializedDatabases: Set<TestDatabase> = []
+
+        for database in existingDatabases {
+            try await self.baselineInitializer(database)
+            initializedDatabases.insert(database)
+        }
+
+        self.availableDatabases = initializedDatabases
         self.state = .active
     }
 
@@ -148,7 +183,17 @@ package actor PoolRegistry {
         if let database = availableDatabases.randomElement() {
             self.availableDatabases.remove(database)
             self.inUseDatabases.insert(database)
-            return database
+            if self.skipLifecycleHooksInTesting {
+                return database
+            }
+            do {
+                try await self.baselineRestorer(database)
+                return database
+            } catch {
+                self.inUseDatabases.remove(database)
+                try? await self.databaseDestroyer(database)
+                throw error
+            }
         }
 
         guard self.totalCount < configuration.capacity else {
@@ -160,16 +205,25 @@ package actor PoolRegistry {
         }
 
         self.launchingCount += 1
+        let database: TestDatabase
         do {
-            let database = try await TestDatabase.launch(
-                configuration: configuration,
-                index: nextIndex
-            )
-            self.launchingCount -= 1
-            self.inUseDatabases.insert(database)
-            return database
+            database = try await self.databaseLauncher(configuration, nextIndex)
         } catch {
             self.launchingCount -= 1
+            throw error
+        }
+        self.launchingCount -= 1
+        self.inUseDatabases.insert(database)
+        if self.skipLifecycleHooksInTesting {
+            return database
+        }
+        try await self.baselineInitializer(database)
+        do {
+            try await self.baselineRestorer(database)
+            return database
+        } catch {
+            self.inUseDatabases.remove(database)
+            try? await self.databaseDestroyer(database)
             throw error
         }
     }
@@ -183,15 +237,21 @@ package actor PoolRegistry {
         guard self.state == .active else { return }
 
         let allDatabases = self.availableDatabases.union(self.inUseDatabases)
+        let databaseDestroyer = self.databaseDestroyer
         self.availableDatabases = []
         self.inUseDatabases = []
         self.launchingCount = 0
         self.state = .unconfigured
+        let skipLifecycleHooksInTesting = self.skipLifecycleHooksInTesting
+        self.skipLifecycleHooksInTesting = false
 
         try await withThrowingTaskGroup(of: Void.self) { group in
+            guard !skipLifecycleHooksInTesting else {
+                return
+            }
             for database in allDatabases {
                 group.addTask {
-                    try await database.destroy()
+                    try await databaseDestroyer(database)
                 }
             }
 

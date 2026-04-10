@@ -16,6 +16,17 @@ public struct TestDatabase: Hashable, Sendable {
 
     let containerName: String
 
+    package enum BaselineError: Error, LocalizedError {
+        case missingIndex(String)
+
+        package var errorDescription: String? {
+            switch self {
+            case .missingIndex(let name):
+                "Missing database index for container '\(name)'"
+            }
+        }
+    }
+
     static func launch(
         configuration: DatabasePool.Configuration,
         index: Int,
@@ -101,6 +112,10 @@ public struct TestDatabase: Hashable, Sendable {
         "test_\(index)"
     }
 
+    package static func baselineName(for index: Int) -> String {
+        "test_\(index)_baseline"
+    }
+
     package static func index(fromContainerName name: String) -> Int? {
         guard name.hasPrefix("testdb_"),
               let suffix = name.split(separator: "_").last,
@@ -119,6 +134,83 @@ public struct TestDatabase: Hashable, Sendable {
     package static func randomPassword(length: Int = 16) -> String {
         let chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
         return String((0..<length).map { _ in chars.randomElement()! })
+    }
+
+    package var baselineName: String {
+        get throws {
+            guard let index else {
+                throw BaselineError.missingIndex(self.containerName)
+            }
+            return Self.baselineName(for: index)
+        }
+    }
+
+    package func initializeBaseline() async throws {
+        try await self.recreateDatabase(
+            named: self.databaseName,
+            fromTemplate: nil
+        )
+        try await self.replaceBaseline()
+    }
+
+    package func restoreBaseline() async throws {
+        try await self.recreateDatabase(
+            named: self.databaseName,
+            fromTemplate: self.baselineName
+        )
+    }
+
+    private func replaceBaseline() async throws {
+        let baselineName = try self.baselineName
+        try await self.dropDatabase(named: baselineName)
+        try await self.createDatabase(
+            named: baselineName,
+            fromTemplate: self.databaseName
+        )
+    }
+
+    private func recreateDatabase(
+        named databaseName: String,
+        fromTemplate templateName: String?
+    ) async throws {
+        try await self.dropDatabase(named: databaseName)
+        try await self.createDatabase(
+            named: databaseName,
+            fromTemplate: templateName
+        )
+    }
+
+    private func dropDatabase(named name: String) async throws {
+        try await self.runAdminSQL(
+            "DROP DATABASE IF EXISTS \(Self.quoteIdentifier(name)) WITH (FORCE)"
+        )
+    }
+
+    private func createDatabase(
+        named name: String,
+        fromTemplate templateName: String?
+    ) async throws {
+        var sql = "CREATE DATABASE \(Self.quoteIdentifier(name))"
+        if let templateName {
+            sql += " TEMPLATE \(Self.quoteIdentifier(templateName)) STRATEGY = file_copy"
+        }
+        try await self.runAdminSQL(sql)
+    }
+
+    private func runAdminSQL(_ sql: String) async throws {
+        try await ShellOut.shellOut(
+            to: .runPSQL(
+                containerName: self.containerName,
+                username: self.username,
+                password: self.password,
+                database: "postgres",
+                sql: sql
+            )
+        )
+    }
+
+    private static func quoteIdentifier(_ value: String) -> String {
+        "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
     }
 }
 
