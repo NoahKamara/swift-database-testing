@@ -61,6 +61,21 @@ struct PoolRegistryTests {
             #expect(await registry.launchingCount == 0)
             #expect(await registry.configuration == nil)
         }
+
+        @Test("activate reclaims existing databases")
+        func activateReclaimsExisting() async throws {
+            let db = makeDB(port: 2, name: "testdb_2")
+            let registry = PoolRegistry(existingDatabasesLoader: { maxCount in
+                #expect(maxCount == 3)
+                return [db]
+            })
+
+            try await registry.activate(.init(capacity: 3))
+
+            #expect(await registry.state == .active)
+            #expect(await registry.configuration == .init(capacity: 3))
+            #expect(await registry.availableDatabases == [db])
+        }
     }
 
     @Suite("Retain")

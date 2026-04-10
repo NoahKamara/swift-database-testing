@@ -87,7 +87,7 @@ The pool reads its configuration from environment variables at first use:
 1. The first time a test needs a database, `PoolRegistry` initializes. It looks for existing containers labeled `testdb.managed=true` and reclaims them (so a crashed previous run doesn't leak containers).
 2. When a test retains a database and none are available, a new container is launched up to the configured capacity. If the pool is full, the test waits (with a 10-second timeout).
 3. Containers use tmpfs-backed `PGDATA` for faster writes and ephemeral storage.
-4. Each container gets a random name (`testdb_<id>`), user, password, and database name. The host port is dynamically assigned (`-p 0:5432`).
+4. Each container gets a stable indexed name (`testdb_<index>`), user, and database name. The host port is dynamically assigned (`-p 0:5432`).
 5. When the outermost `DatabaseTrait`-scoped suite finishes, all containers are destroyed in parallel.
 
 ## License

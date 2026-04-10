@@ -195,6 +195,28 @@ struct ParsingTests {
         }
     }
 
+    @Suite("Indexed Names")
+    struct IndexedNamesTests {
+        @Test("derives stable container identity from index")
+        func derivesStableIdentity() {
+            #expect(TestDatabase.containerName(for: 4) == "testdb_4")
+            #expect(TestDatabase.username(for: 4) == "user_4")
+            #expect(TestDatabase.databaseName(for: 4) == "test_4")
+        }
+
+        @Test("extracts index from indexed container names")
+        func extractsIndex() {
+            #expect(TestDatabase.index(fromContainerName: "testdb_0") == 0)
+            #expect(TestDatabase.index(fromContainerName: "testdb_17") == 17)
+        }
+
+        @Test("ignores non-indexed container names")
+        func ignoresNonIndexedNames() {
+            #expect(TestDatabase.index(fromContainerName: "testdb_abc") == nil)
+            #expect(TestDatabase.index(fromContainerName: "postgres") == nil)
+        }
+    }
+
     @Suite("randomPassword")
     struct RandomPasswordTests {
         @Test("default length is 16")

@@ -18,12 +18,13 @@ public struct TestDatabase: Hashable, Sendable {
 
     static func launch(
         configuration: DatabasePool.Configuration,
+        index: Int,
         maxAttempts: Int = 3
     ) async throws -> TestDatabase {
-        let containerName = "testdb_\(Self.shortID())"
-        let username = "user_\(Self.shortID())"
+        let containerName = Self.containerName(for: index)
+        let username = Self.username(for: index)
         let password = Self.randomPassword()
-        let databaseName = "test_\(Self.shortID())"
+        let databaseName = Self.databaseName(for: index)
 
         _ = try? await ShellOut.shellOut(to: .removeDB(containerName: containerName))
         try await withRetry(maxAttempts: maxAttempts) { _ in
@@ -82,6 +83,33 @@ public struct TestDatabase: Hashable, Sendable {
         try await withRetry(maxAttempts: maxAttempts) { _ in
             try await ShellOut.shellOut(to: .removeDB(containerName: self.containerName))
         }
+    }
+
+    package var index: Int? {
+        Self.index(fromContainerName: self.containerName)
+    }
+
+    package static func containerName(for index: Int) -> String {
+        "testdb_\(index)"
+    }
+
+    package static func username(for index: Int) -> String {
+        "user_\(index)"
+    }
+
+    package static func databaseName(for index: Int) -> String {
+        "test_\(index)"
+    }
+
+    package static func index(fromContainerName name: String) -> Int? {
+        guard name.hasPrefix("testdb_"),
+              let suffix = name.split(separator: "_").last,
+              let index = Int(suffix)
+        else {
+            return nil
+        }
+
+        return index
     }
 
     package static func shortID() -> String {
